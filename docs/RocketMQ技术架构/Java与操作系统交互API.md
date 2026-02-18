@@ -224,7 +224,7 @@ limit = capacity                   limit 标记可读边界
 **源码示例**：
 
 ```java
-// BatchConsumeQueue.java:512-513 - 写入前准备
+// BatchConsumeQueue.java:512 - 写入前准备
 this.byteBufferItem.flip();
 this.byteBufferItem.limit(CQ_STORE_UNIT_SIZE);
 
@@ -255,15 +255,17 @@ byteBufferRead.compact();
 **源码示例**：
 
 ```java
-// BatchConsumeQueue.java:514-521 - 写入索引单元
+// BatchConsumeQueue.java:514-523 - 写入索引单元
 this.byteBufferItem.putLong(offset);        // 消息物理偏移量
 this.byteBufferItem.putInt(size);           // 消息大小
 this.byteBufferItem.putLong(tagsCode);      // 标签哈希
 this.byteBufferItem.putLong(storeTime);     // 存储时间
 this.byteBufferItem.putLong(msgBaseOffset); // 消息基偏移
 this.byteBufferItem.putShort(batchSize);    // 批次大小
+this.byteBufferItem.putInt(INVALID_POS);    // 压缩偏移（初始值 -1）
+this.byteBufferItem.putInt(0);              // 预留字段
 
-// BatchConsumeQueue.java:188-196 - 恢复时读取索引单元
+// BatchConsumeQueue.java:189-197 - 恢复时读取索引单元
 byteBuffer.position(i);
 long offset = byteBuffer.getLong();      // 消息物理偏移量
 int size = byteBuffer.getInt();          // 消息大小
@@ -286,11 +288,11 @@ short batchSize = byteBuffer.getShort();
 **源码示例**：
 
 ```java
-// DefaultMappedFile.java:421-424 - 双重 slice 读取
-ByteBuffer byteBuffer = this.mappedByteBuffer.slice();
-byteBuffer.position(pos);
-ByteBuffer byteBufferNew = byteBuffer.slice();
-byteBufferNew.limit(size);
+// DefaultMappedFile.java:421-425 - 双重 slice 读取
+ByteBuffer byteBuffer = this.mappedByteBuffer.slice();  // 第1次：创建独立视图
+byteBuffer.position(pos);                               // 定位到目标位置
+ByteBuffer byteBufferNew = byteBuffer.slice();          // 第2次：position 重置为 0
+byteBufferNew.limit(size);                              // 设置读取长度
 
 // BatchConsumeQueue.java:860 - 迭代器判断
 return sbr.getByteBuffer().hasRemaining();
@@ -312,7 +314,7 @@ return sbr.getByteBuffer().hasRemaining();
 **双重 slice**：无参 `slice()` 只能从当前 position 开始切片，需要从中间位置切出数据时，需要双重 slice：
 
 ```java
-// DefaultMappedFile.java:421-424 - 从位置 pos 切出 size 字节
+// DefaultMappedFile.java:421-425 - 从位置 pos 切出 size 字节
 ByteBuffer byteBuffer = this.mappedByteBuffer.slice();  // 第1次：创建独立视图
 byteBuffer.position(pos);                               // 定位到目标位置
 ByteBuffer byteBufferNew = byteBuffer.slice();          // 第2次：position 重置为 0
@@ -336,11 +338,11 @@ T3: 线程A 执行 buffer.get()            → 读到了 Msg5 的数据！错误
 
 ```java
 // CommitLog.java:1784-1803 - 批量消息写入时标记/恢复
-messagesByteBuff.mark();
+messagesByteBuff.mark();                   // 标记当前位置
 // ... 处理消息 ...
-if (写入失败) {
-    messagesByteBuff.reset();  // 恢复到标记位置
-    byteBuffer.reset();        // 忽略之前追加的消息
+if (空间不足) {
+    messagesByteBuff.reset();              // 恢复到标记位置
+    byteBuffer.reset();                    // 忽略之前追加的消息
 }
 ```
 
@@ -361,11 +363,11 @@ if (写入失败) {
 **源码示例**：
 
 ```java
-// DefaultMappedFile.java:307-310 - 刷盘逻辑
+// DefaultMappedFile.java:307-311 - 刷盘逻辑
 if (writeBuffer != null || this.fileChannel.position() != 0) {
-    this.fileChannel.force(false);      // fdatasync
+    this.fileChannel.force(false);      // fdatasync：使用堆外缓冲区时刷 FileChannel
 } else {
-    this.mappedByteBuffer.force();       // msync
+    this.mappedByteBuffer.force();       // msync：直接使用 mmap 映射时刷映射内存
 }
 
 // StoreCheckpoint.java:87 - 检查点刷盘
